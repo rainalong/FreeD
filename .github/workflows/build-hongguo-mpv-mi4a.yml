@@ -1,0 +1,72 @@
+name: Hongguo MiTV4 MPV test APK
+
+on:
+  push:
+    branches:
+      - build/hongguo-mpv-mitv4-portrait-20261117
+
+permissions:
+  contents: read
+
+jobs:
+  mpv-debug-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch upstream Hongguo TV source
+        run: |
+          git clone --depth 1 --branch main https://github.com/aston314/hongguo-tv.git hongguo
+          git -C hongguo rev-parse HEAD | tee SOURCE_COMMIT.txt
+      - name: Apply targeted MiTV4 MPV patch
+        run: |
+          cd hongguo
+          python3 ../tools/hongguo_mitv4_patch.py
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: false
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android SDK and NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          for attempt in 1 2 3; do
+            if sdkmanager "platforms;android-36" "build-tools;35.0.0" "ndk;27.2.12479018"; then
+              break
+            fi
+            if [ "$attempt" = "3" ]; then exit 1; fi
+            rm -rf "$ANDROID_HOME/.temp" "$ANDROID_HOME/ndk/27.2.12479018"
+          done
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+      - name: Compile Android native Go service
+        working-directory: hongguo
+        run: bash scripts/build_android_binaries.sh
+      - name: Prepare libmpv and compile JNI bridge
+        working-directory: hongguo
+        run: python3 scripts/prepare_mpv.py
+      - name: Build signed debug MPV APK
+        working-directory: hongguo
+        run: gradle --no-daemon --max-workers=1 --stacktrace -p android :app:assembleMpvDebug
+      - name: APK verification
+        run: |
+          test -s hongguo/android/app/build/outputs/apk/mpv/debug/app-mpv-debug.apk
+          sha256sum hongguo/android/app/build/outputs/apk/mpv/debug/app-mpv-debug.apk
+      - name: Upload test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: HongguoTV-MiTV4-MPV-portrait-test
+          path: hongguo/android/app/build/outputs/apk/mpv/debug/app-mpv-debug.apk
+          if-no-files-found: error
+          retention-days: 7
