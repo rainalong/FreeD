@@ -18,6 +18,7 @@ jobs:
         run: |
           git clone --depth 1 --branch main https://github.com/aston314/hongguo-tv.git hongguo
           git -C hongguo rev-parse HEAD | tee SOURCE_COMMIT.txt
+          echo "HONGGUO_CORE_VERSION=0.2.173-$(git -C hongguo rev-parse HEAD)" >> "$GITHUB_ENV"
       - name: Apply targeted MiTV4 MPV patch
         run: |
           cd hongguo
@@ -52,6 +53,8 @@ jobs:
           gradle-version: "8.13"
       - name: Compile Android native Go service
         working-directory: hongguo
+        env:
+          VERSION: ${{ env.HONGGUO_CORE_VERSION }}
         run: bash scripts/build_android_binaries.sh
       - name: Prepare libmpv and compile JNI bridge
         working-directory: hongguo
