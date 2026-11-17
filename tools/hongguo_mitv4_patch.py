@@ -82,15 +82,7 @@ patch(
 )
 
 # Guard every software fallback path, not only 'portrait_geometry'.
-patch(
-    '            retrySoftware(target, "known_broken_profile", false);\n',
-    '            if (!isMiTV4()) retrySoftware(target, "known_broken_profile", false);\n'
-)
-# two call sites with different indentation. Above replaces only the rendered() one.
-patch(
-    '                                retrySoftware(target, "known_broken_profile", false);\n',
-    '                                if (!isMiTV4()) retrySoftware(target, "known_broken_profile", false);\n'
-)
+# Memory branches are instead gated with !isMiTV4() below.
 # Important: without bypassing the memory branches, they return before rendering.
 patch(
     '                                    && isHardwareDecoder(active) && decodeMemory.isBroken(loadedProfile)) {',
