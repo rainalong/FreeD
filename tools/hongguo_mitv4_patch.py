@@ -1,47 +1,69 @@
 #!/usr/bin/env python3
-"""Experimental MiTV4-ANSM0 portrait HEVC MPV fix.
+"""MiTV4-ANSM0 portrait HEVC GPU aspect experiment, no CPU fallback for dimensions.
 
-This intentionally changes only the MPV player flavor. Do not interpret an
-1088-row decoder buffer as evidence that the original frame was 1088 rows.
+MediaCodec may truly crop a 1920-row picture to 1088 rows. This experimental
+patch only overrides MPV's displayed aspect ratio: it cannot recover data
+missing from the hardware output. Other MPV fallback triggers stay enabled.
 """
 from pathlib import Path
 
-root = Path.cwd()
-src = root / "android/app/src/mpv/java/rocks/aston/hongguotv"
+src = Path.cwd() / "android/app/src/mpv/java/rocks/aston/hongguotv"
 bridge = src / "MpvPlayerBridge.java"
-fallback = src / "MpvFallbackPolicy.java"
 geometry = src / "MpvPortraitGeometryPolicy.java"
 
 def patch(path, before, after):
     data = path.read_text(encoding="utf-8")
     if data.count(before) != 1:
-        raise RuntimeError(f"Unexpected upstream source layout: {path.name} count={data.count(before)}")
+        raise RuntimeError(f"Unexpected upstream source: {path.name} count={data.count(before)}")
     path.write_text(data.replace(before, after, 1), encoding="utf-8")
 
 geometry.write_text("""package rocks.aston.hongguotv;
 
-/** Recognize a portrait HEVC frame whose height was replaced by a decoder buffer height. */
+/** A narrow test condition for legacy Amlogic HEVC portrait dimensions. */
 final class MpvPortraitGeometryPolicy {
     private MpvPortraitGeometryPolicy() {}
-    static boolean broken(int sourceW, int sourceH, int decodedW, int decodedH,
-                          boolean hevc, boolean hardware) {
-        return hevc && hardware && sourceW >= 320 && sourceH >= 1184
-            && sourceH > sourceW * 1.2
-            && decodedW > 0 && decodedH >= 1000 && decodedH <= 1088
-            && sourceH - decodedH >= 96
-            && Math.abs(sourceW - decodedW) <= 16;
+    static boolean broken(int sw, int sh, int dw, int dh, boolean hevc, boolean hardware) {
+        return hevc && hardware && sw >= 320 && sh >= 1184
+            && sh > sw * 1.2 && dw > 0
+            && dh >= 1000 && dh <= 1088
+            && sh - dh >= 96
+            && Math.abs(sw - dw) <= 16;
     }
 }
 """, encoding="utf-8")
 
 patch(bridge,
+    '        boolean softwareFallback;\n',
+    '        boolean softwareFallback, portraitAspectFixed;\n')
+
+patch(bridge,
     '        target.output.configured = Boolean.TRUE.equals(player.getPropertyBoolean("vo-configured"));\n        Boolean coreIdle',
     '        target.output.configured = Boolean.TRUE.equals(player.getPropertyBoolean("vo-configured"));\n'
-    '        if (target.output.loaded && portraitOutputBroken(target)) {\n'
-    '            retrySoftware(target, "portrait_geometry", false);\n'
-    '            return;\n'
+    '        if (target.output.loaded && portraitOutputBroken(target) && !target.portraitAspectFixed) {\n'
+    '            int sw = nonzero(player.getPropertyInt("current-tracks/video/demux-w"));\n'
+    '            int sh = nonzero(player.getPropertyInt("current-tracks/video/demux-h"));\n'
+    '            if (sw > 0 && sh > 0) {\n'
+    '                try {\n'
+    '                    player.setPropertyString("video-aspect-override", sw + ":" + sh);\n'
+    '                    target.portraitAspectFixed = true;\n'
+    '                } catch (RuntimeException ignored) { /* retain hardware and diagnostic */ }\n'
+    '            }\n'
     '        }\n'
     '        Boolean coreIdle')
+
+patch(bridge,
+    '            target.player.setPropertyString("hwdec", activeHwdec(target));\n'
+    '            target.player.setPropertyString("force-window", "yes");',
+    '            target.player.setPropertyString("hwdec", activeHwdec(target));\n'
+    '            target.player.setPropertyString("video-aspect-override", "no");\n'
+    '            target.player.setPropertyString("force-window", "yes");')
+
+patch(bridge,
+    '            active.setPropertyString("hwdec", activeHwdec(target));\n'
+    '            target.pendingSeek = target.position > 0;',
+    '            active.setPropertyString("hwdec", activeHwdec(target));\n'
+    '            active.setPropertyString("video-aspect-override", "no");\n'
+    '            target.pendingSeek = target.position > 0;')
 
 patch(bridge,
     '    private static String activeHwdec(Session target) {\n'
@@ -60,20 +82,25 @@ patch(bridge,
     '        if (active == null || target.mode != MpvDecodeMode.AUTOMATIC ||\n'
     '                target.softwareFallback || !"MiTV4-ANSM0".equals(android.os.Build.MODEL))\n'
     '            return false;\n'
-    '        int sourceW = nonzero(active.getPropertyInt("current-tracks/video/demux-w"));\n'
-    '        int sourceH = nonzero(active.getPropertyInt("current-tracks/video/demux-h"));\n'
-    '        int decodedW = nonzero(active.getPropertyInt("video-dec-params/w"));\n'
-    '        int decodedH = nonzero(active.getPropertyInt("video-dec-params/h"));\n'
-    '        return MpvPortraitGeometryPolicy.broken(sourceW, sourceH, decodedW, decodedH,\n'
+    '        int sw = nonzero(active.getPropertyInt("current-tracks/video/demux-w"));\n'
+    '        int sh = nonzero(active.getPropertyInt("current-tracks/video/demux-h"));\n'
+    '        int dw = nonzero(active.getPropertyInt("video-dec-params/w"));\n'
+    '        int dh = nonzero(active.getPropertyInt("video-dec-params/h"));\n'
+    '        return MpvPortraitGeometryPolicy.broken(sw, sh, dw, dh,\n'
     '            "hevc".equalsIgnoreCase(property(active, "video-codec")), isHardwareDecoder(active));\n'
     '    }\n'
     '    private static boolean isHardwareDecoder')
 
-patch(fallback,
-    '        return "known_broken_profile".equals(reason)\n'
-    '            || "green_frame".equals(reason)',
-    '        return "known_broken_profile".equals(reason)\n'
-    '            || "portrait_geometry".equals(reason)\n'
-    '            || "green_frame".equals(reason)')
+patch(bridge,
+    '                .put("width", target.output.width).put("height", target.output.height).put("speed", speed)',
+    '                .put("width", target.output.width).put("height", target.output.height).put("speed", speed)\n'
+    '                .put("portrait_aspect_fixed", target.portraitAspectFixed)')
 
-print("Patched MPV HEVC decode path and portrait geometry guard.")
+patch(bridge,
+    '                fields.put("video_decoder", target.decoder).put("hwdec_current", property(player, "hwdec-current"));',
+    '                fields.put("video_decoder", target.decoder).put("hwdec_current", property(player, "hwdec-current"));\n'
+    '                fields.put("portrait_source_width", nonzero(player.getPropertyInt("current-tracks/video/demux-w")))\n'
+    '                    .put("portrait_source_height", nonzero(player.getPropertyInt("current-tracks/video/demux-h")))\n'
+    '                    .put("portrait_ratio_override", property(player, "video-aspect-override"));')
+
+print("Patched MiTV4 hardware HEVC portrait aspect experiment (NO geometry CPU fallback).")
