@@ -1,4 +1,4 @@
-name: Hongguo MiTV4 MPV test APK
+name: Hongguo MiTV4 V4 latest-source APK
 
 on:
   push:
@@ -18,7 +18,11 @@ jobs:
         run: |
           git clone --depth 1 --branch main https://github.com/aston314/hongguo-tv.git hongguo
           git -C hongguo rev-parse HEAD | tee SOURCE_COMMIT.txt
-          echo "HONGGUO_CORE_VERSION=0.2.173-$(git -C hongguo rev-parse HEAD)" >> "$GITHUB_ENV"
+          APP_VERSION="$(python3 -c 'import pathlib,re; text=pathlib.Path("hongguo/android/app/build.gradle").read_text(); print(re.search(r"def appVersion = \"([0-9.]+)\"",text).group(1))')"
+          SOURCE_SHA="$(git -C hongguo rev-parse HEAD)"
+          echo "HONGGUO_CORE_VERSION=${APP_VERSION}-${SOURCE_SHA}" >> "$GITHUB_ENV"
+          printf 'upstream=aston314/hongguo-tv\nbranch=main\ncommit=%s\napp_version=%s\nvariant=MiTV4 V4 MPV test\n' "$SOURCE_SHA" "$APP_VERSION" > SOURCE_METADATA.txt
+          cat SOURCE_METADATA.txt
       - name: Apply targeted MiTV4 MPV patch
         run: |
           cd hongguo
@@ -69,7 +73,9 @@ jobs:
       - name: Upload test APK
         uses: actions/upload-artifact@v4
         with:
-          name: HongguoTV-MiTV4-MPV-portrait-test
-          path: hongguo/android/app/build/outputs/apk/mpv/debug/app-mpv-debug.apk
+          name: HongguoTV-MiTV4-V4-latest-source
+          path: |
+            hongguo/android/app/build/outputs/apk/mpv/debug/app-mpv-debug.apk
+            SOURCE_METADATA.txt
           if-no-files-found: error
           retention-days: 7
